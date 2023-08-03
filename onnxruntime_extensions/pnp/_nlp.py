@@ -14,30 +14,13 @@ def make_custom_op(ctx, op_type, input_names, output_names, container, operator_
 
 
 def create_bert_tokenizer(ctx, name, input_names, output_names, container, operator_name=None, **kwargs):
-    if 'hf_tok' in kwargs:
-        hf_bert_tokenizer = kwargs['hf_tok']
-        ordered_vocab = OrderedDict(sorted(hf_bert_tokenizer.vocab.items(), key=lambda item: int(item[1])))
-        vocab = '\n'.join(ordered_vocab.keys())
-        attrs = dict(vocab_file=vocab)
-        # Unfortunately, there's no specific accessor function on
-        # transformers.BertTokenizer to query for strip_accents.
-        attrs['strip_accents'] = 1 if 'strip_accents' in hf_bert_tokenizer.init_kwargs and hf_bert_tokenizer.init_kwargs.get('strip_accents') else 0
-        attrs['do_lower_case'] = 1 if hasattr(hf_bert_tokenizer, 'do_lower_case') and hf_bert_tokenizer.do_lower_case else 0
-    elif 'vocab_file' in kwargs:
-        vocab = None
-        vocab_file = kwargs['vocab_file']
-        with open(vocab_file, "r", encoding='utf-8') as vf:
-            lines = vf.readlines()
-            vocab = '\n'.join(lines)
-        if vocab is None:
-            raise RuntimeError("Cannot load vocabulary file {}!".format(vocab_file))
-        attrs = dict(vocab_file=vocab)
-        if 'strip_accents' in kwargs:
-            attrs['strip_accents'] = kwargs['strip_accents']
-        if 'do_lower_case' in kwargs:
-            attrs['do_lower_case'] = kwargs['do_lower_case']
+    if 'vocab_file' in kwargs:
+        attrs = dict(vocab_file=kwargs['vocab_file'])
+        for a in ['strip_accents', 'do_lower_case', 'unk_token', 'sep_token', 'pad_token', 'cls_token', 'mask_token', 'tokenize_chinese_chars', 'max_length', 'do_basic_tokenize', 'suffix_indicator', 'truncation_strategy_name']:
+            if a in kwargs and kwargs[a] is not None:
+                attrs[a] = kwargs[a]
     else:
-        raise RuntimeError("Need hf_tok/vocab_file parameter to build the tokenizer")
+        raise RuntimeError("Need vocab_file parameter to build the tokenizer")
 
     return make_custom_op(ctx, name, input_names,
                           output_names, container, operator_name=operator_name, **attrs)
@@ -91,16 +74,57 @@ def _get_bound_object(func):
 # v1. Order of outputs - input_ids, token_type_ids, attention_mask
 #    (this is NOT consistent with the HuggingFace implementation of the tokenizer)
 class PreHuggingFaceBert(ProcessingTracedModule):
-    def __init__(self, hf_tok=None, vocab_file=None, do_lower_case=0, strip_accents=1):
+    def __init__(self, hf_tok=None, vocab_file=None, do_lower_case=None, strip_accents=None, unk_token=None, sep_token=None, pad_token=None, cls_token=None, mask_token=None, tokenize_chinese_chars=None, max_length=None, do_basic_tokenize=True, suffix_indicator=None, truncation_strategy_name=None):
         super(PreHuggingFaceBert, self).__init__()
-        if hf_tok is None:
-            self.onnx_bert_tokenizer = create_op_function('BertTokenizer', bert_tokenizer,
+
+        if hf_tok is not None and vocab_file is None:
+            ordered_vocab = OrderedDict(sorted(hf_tok.vocab.items(), key=lambda item: int(item[1])))
+            vocab_file = '\n'.join(ordered_vocab.keys())
+
+        if hf_tok is not None and do_lower_case is None:
+            do_lower_case = 1 if hasattr(hf_tok, 'do_lower_case') and hf_tok.do_lower_case else 0
+
+        if hf_tok is not None and strip_accents is None:
+            strip_accents = 1 if 'strip_accents' in hf_tok.init_kwargs and hf_tok.init_kwargs.get('strip_accents') else 0
+
+        if hf_tok is not None and unk_token is None:
+            unk_token = hf_tok.special_tokens_map["unk_token"]
+
+        if hf_tok is not None and sep_token is None:
+            sep_token = hf_tok.special_tokens_map["sep_token"]
+
+        if hf_tok is not None and pad_token is None:
+            pad_token = hf_tok.special_tokens_map["pad_token"]
+
+        if hf_tok is not None and cls_token is None:
+            cls_token = hf_tok.special_tokens_map["cls_token"]
+
+        if hf_tok is not None and mask_token is None:
+            mask_token = hf_tok.special_tokens_map["mask_token"]
+
+        if hf_tok is not None and max_length is None:
+            max_length = hf_tok.model_max_length
+
+        if hf_tok is not None and tokenize_chinese_chars is None:
+            tokenize_chinese_chars = 1 if 'tokenize_chinese_chars' in hf_tok.init_kwargs and hf_tok.init_kwargs.get('tokenize_chinese_chars') else 0
+
+
+        self.onnx_bert_tokenizer = create_op_function('BertTokenizer', bert_tokenizer,
                                                           vocab_file=vocab_file,
                                                           do_lower_case=do_lower_case,
-                                                          strip_accents=strip_accents)
-        else:
-            self.onnx_bert_tokenizer = create_op_function('BertTokenizer', bert_tokenizer,
-                                                          hf_tok=hf_tok)
+                                                          strip_accents=strip_accents,
+                                                          unk_token=unk_token,
+                                                          sep_token=sep_token,
+                                                          pad_token=pad_token,
+                                                          cls_token=cls_token,
+                                                          mask_token=mask_token,
+                                                          tokenize_chinese_chars=tokenize_chinese_chars,
+                                                          max_length=max_length,
+                                                          do_basic_tokenize=do_basic_tokenize,
+                                                          suffix_indicator=suffix_indicator,
+                                                          truncation_strategy_name=truncation_strategy_name,
+                                                          )
+
 
     def forward(self, text):
         return self.onnx_bert_tokenizer(text)
